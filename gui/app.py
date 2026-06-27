@@ -9,8 +9,8 @@ import json
 import os
 
 from database.connection import get_session
-from database.models import ExperimentData, Module, Version
-from voting.median_voting import MedianVotingAlgorithm
+from database.models import ExperimentData, VotingRun
+from voting.median_voting import VotingAlgorithm
 
 
 class DatabaseSelectorDialog(tk.Toplevel):
@@ -91,33 +91,32 @@ class DatabaseSelectorDialog(tk.Toplevel):
 class ExperimentPanel(ttk.Frame):
     """Панель выбора эксперимента"""
 
-    def __init__(self, parent, on_experiment_selected: Callable[[str], None] = None):
+    def __init__(self, parent, on_run_clicked: Callable[[str], None] = None):
         super().__init__(parent)
         self.selected_experiment_name = None
-        self.on_experiment_selected_callback = on_experiment_selected
+        self.on_run_clicked_callback = on_run_clicked
         self._create_widgets()
 
     def _create_widgets(self):
-        ttk.Label(self, text="📋 Выбор эксперимента", font=('Arial', 12, 'bold')).pack(pady=5, anchor=tk.W)
+        ttk.Label(self, text="📋 Выбор эксперимента", font=('Arial', 14, 'bold')).pack(pady=10, anchor=tk.W)
 
-        ttk.Label(self, text="Двойной клик или кнопка для выбора",
-                  font=('Arial', 9), foreground='gray').pack(anchor=tk.W, padx=5)
+        ttk.Label(self, text="Выберите эксперимент и нажмите 'Запустить' для вычисления двух алгоритмов",
+                  font=('Arial', 9), foreground='gray').pack(anchor=tk.W, padx=10)
 
+        # Фрейм для таблицы
         table_frame = ttk.Frame(self)
-        table_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+        table_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
 
-        columns = ('Эксперимент', 'Модулей', 'Версий', 'Записей')
-        self.tree = ttk.Treeview(table_frame, columns=columns, show='headings', height=8)
+        columns = ('Эксперимент', 'Записей', 'Уникальных значений')
+        self.tree = ttk.Treeview(table_frame, columns=columns, show='headings', height=10)
 
         self.tree.heading('Эксперимент', text='Название эксперимента')
-        self.tree.heading('Модулей', text='Модулей')
-        self.tree.heading('Версий', text='Версий')
-        self.tree.heading('Записей', text='Записей')
+        self.tree.heading('Записей', text='Всего записей')
+        self.tree.heading('Уникальных значений', text='Уникальных version_answer')
 
-        self.tree.column('Эксперимент', width=300)
-        self.tree.column('Модулей', width=100, anchor=tk.CENTER)
-        self.tree.column('Версий', width=100, anchor=tk.CENTER)
-        self.tree.column('Записей', width=100, anchor=tk.CENTER)
+        self.tree.column('Эксперимент', width=350)
+        self.tree.column('Записей', width=120, anchor=tk.CENTER)
+        self.tree.column('Уникальных значений', width=150, anchor=tk.CENTER)
 
         y_scrollbar = ttk.Scrollbar(table_frame, orient=tk.VERTICAL, command=self.tree.yview)
         x_scrollbar = ttk.Scrollbar(table_frame, orient=tk.HORIZONTAL, command=self.tree.xview)
@@ -129,18 +128,17 @@ class ExperimentPanel(ttk.Frame):
         table_frame.grid_rowconfigure(0, weight=1)
         table_frame.grid_columnconfigure(0, weight=1)
 
-        # Одиночный клик - выделение
         self.tree.bind('<<TreeviewSelect>>', self.on_select)
-        # Двойной клик - подтверждение выбора и переход к модулям
-        self.tree.bind('<Double-1>', self.on_double_click)
+        self.tree.bind('<Double-1>', lambda e: self.on_run())
 
+        # Кнопки
         btn_frame = ttk.Frame(self)
-        btn_frame.pack(fill=tk.X, pady=5)
+        btn_frame.pack(fill=tk.X, pady=10)
 
-        self.select_btn = ttk.Button(btn_frame, text="✅ Выбрать этот эксперимент",
-                                     command=self.on_confirm_selection)
-        self.select_btn.pack(side=tk.RIGHT, padx=5)
-        self.select_btn.config(state='disabled')
+        self.run_btn = ttk.Button(btn_frame, text="🚀 Запустить оба алгоритма",
+                                   command=self.on_run, width=30)
+        self.run_btn.pack(side=tk.RIGHT, padx=5)
+        self.run_btn.config(state='disabled')
 
         ttk.Button(btn_frame, text="🔄 Обновить", command=self.on_refresh).pack(side=tk.RIGHT, padx=5)
 
@@ -152,16 +150,14 @@ class ExperimentPanel(ttk.Frame):
         experiments = session.query(
             ExperimentData.experiment_name,
             func.count(ExperimentData.id).label('total_records'),
-            func.count(func.distinct(ExperimentData.module_id)).label('modules_count'),
-            func.count(func.distinct(ExperimentData.version_id)).label('versions_count')
+            func.count(func.distinct(ExperimentData.version_answer)).label('unique_answers')
         ).group_by(ExperimentData.experiment_name).all()
 
         for exp in experiments:
             self.tree.insert('', tk.END, values=(
                 exp.experiment_name,
-                exp.modules_count,
-                exp.versions_count,
-                exp.total_records
+                exp.total_records,
+                exp.unique_answers
             ))
 
     def on_select(self, event):
@@ -169,16 +165,11 @@ class ExperimentPanel(ttk.Frame):
         if selection:
             item = self.tree.item(selection[0])
             self.selected_experiment_name = item['values'][0]
-            self.select_btn.config(state='normal')
+            self.run_btn.config(state='normal')
 
-    def on_double_click(self, event):
-        """Двойной клик - подтвердить выбор"""
-        self.on_confirm_selection()
-
-    def on_confirm_selection(self):
-        """Подтверждение выбора эксперимента"""
-        if self.selected_experiment_name and self.on_experiment_selected_callback:
-            self.on_experiment_selected_callback(self.selected_experiment_name)
+    def on_run(self):
+        if self.selected_experiment_name and self.on_run_clicked_callback:
+            self.on_run_clicked_callback(self.selected_experiment_name)
 
     def on_refresh(self):
         self.load_experiments()
@@ -187,43 +178,53 @@ class ExperimentPanel(ttk.Frame):
         return self.selected_experiment_name
 
 
-class ModulePanel(ttk.Frame):
-    """Панель выбора модулей с чекбоксами"""
+class ResultsPanel(ttk.Frame):
+    """Панель результатов с одновременным отображением двух алгоритмов"""
 
     def __init__(self, parent):
         super().__init__(parent)
-        self.experiment_name = None
-        # Хранение состояния: {item_id: {'module_id': int, 'selected': bool}}
-        self.module_states = {}
+        self.all_runs = []
         self._create_widgets()
 
     def _create_widgets(self):
-        ttk.Label(self, text="📦 Выбор модулей", font=('Arial', 12, 'bold')).pack(pady=5, anchor=tk.W)
+        ttk.Label(self, text="📊 Результаты голосования (сравнение алгоритмов)",
+                  font=('Arial', 14, 'bold')).pack(pady=10, anchor=tk.W)
 
-        self.info_label = ttk.Label(self, text="Сначала выберите эксперимент на вкладке 1",
-                                    font=('Arial', 9), foreground='gray')
-        self.info_label.pack(pady=5, anchor=tk.W)
+        # Кнопки управления
+        btn_frame_top = ttk.Frame(self)
+        btn_frame_top.pack(fill=tk.X, padx=10, pady=5)
 
-        ttk.Label(self, text="💡 Клик по колонке 'Выбрать' переключает чекбокс",
-                  font=('Arial', 9), foreground='blue').pack(anchor=tk.W, padx=5)
+        ttk.Button(btn_frame_top, text="💾 Сохранить в БД", command=self.on_save_to_db).pack(side=tk.LEFT, padx=5)
+        ttk.Button(btn_frame_top, text="💾 Сохранить JSON", command=self.on_save_json).pack(side=tk.LEFT, padx=5)
+        ttk.Button(btn_frame_top, text="🗑️ Очистить все", command=self.on_clear_all).pack(side=tk.RIGHT, padx=5)
 
+        # Информация о запусках
+        self.runs_info_lbl = ttk.Label(self, text="Всего запусков: 0 | Совпадений: 0 | Расхождений: 0",
+                                        font=('Arial', 10), foreground='blue')
+        self.runs_info_lbl.pack(pady=5, anchor=tk.W)
+
+        # Таблица результатов
         table_frame = ttk.Frame(self)
-        table_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+        table_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
 
-        columns = ('Выбрать', 'ID', 'Название', 'Версий', 'Итераций')
-        self.tree = ttk.Treeview(table_frame, columns=columns, show='headings', height=10)
+        columns = (
+            'ID', 'Эксперимент', 'Алгоритм',
+            'Результат', 'Правильный', 'Статус', 'Отклонение',
+            'Совпадает', 'Время'
+        )
+        self.tree = ttk.Treeview(table_frame, columns=columns, show='headings', height=15)
 
-        self.tree.heading('Выбрать', text='✓ Выбрать')
-        self.tree.heading('ID', text='ID')
-        self.tree.heading('Название', text='Название модуля')
-        self.tree.heading('Версий', text='Версий')
-        self.tree.heading('Итераций', text='Итераций')
+        column_widths = {
+            'ID': 50, 'Эксперимент': 200, 'Алгоритм': 150,
+            'Результат': 130, 'Правильный': 130, 'Статус': 70,
+            'Отклонение': 110, 'Совпадает': 100, 'Время': 160
+        }
 
-        self.tree.column('Выбрать', width=80, anchor=tk.CENTER)
-        self.tree.column('ID', width=60, anchor=tk.CENTER)
-        self.tree.column('Название', width=250)
-        self.tree.column('Версий', width=100, anchor=tk.CENTER)
-        self.tree.column('Итераций', width=100, anchor=tk.CENTER)
+        for col in columns:
+            self.tree.heading(col, text=col)
+            width = column_widths.get(col, 100)
+            anchor = tk.CENTER if col not in ['Результат', 'Отклонение', 'Правильный'] else "e"
+            self.tree.column(col, width=width, anchor=anchor)
 
         y_scrollbar = ttk.Scrollbar(table_frame, orient=tk.VERTICAL, command=self.tree.yview)
         x_scrollbar = ttk.Scrollbar(table_frame, orient=tk.HORIZONTAL, command=self.tree.xview)
@@ -234,294 +235,162 @@ class ModulePanel(ttk.Frame):
         x_scrollbar.grid(row=1, column=0, sticky='ew')
         table_frame.grid_rowconfigure(0, weight=1)
         table_frame.grid_columnconfigure(0, weight=1)
-
-        # Обработка клика для переключения чекбокса
-        self.tree.bind('<Button-1>', self.on_tree_click)
 
         # Теги для цветов
-        self.tree.tag_configure('selected', background='#d4edda')  # светло-зелёный
-        self.tree.tag_configure('unselected', background='#ffffff')
-
-        btn_frame = ttk.Frame(self)
-        btn_frame.pack(fill=tk.X, pady=5)
-        ttk.Button(btn_frame, text="✅ Выбрать все", command=self.on_select_all).pack(side=tk.LEFT, padx=5)
-        ttk.Button(btn_frame, text="❌ Снять выделение", command=self.on_deselect_all).pack(side=tk.LEFT, padx=5)
-        ttk.Button(btn_frame, text="🔄 Обновить", command=self.on_refresh).pack(side=tk.RIGHT, padx=5)
-
-    def set_experiment(self, experiment_name: str):
-        """Загрузка модулей для выбранного эксперимента"""
-        self.experiment_name = experiment_name
-        self.info_label.config(text=f"Эксперимент: {experiment_name}", foreground='black')
-
-        # Очистка
-        for item in self.tree.get_children():
-            self.tree.delete(item)
-        self.module_states.clear()
-
-        session = get_session()
-
-        # Получаем уникальные модули для этого эксперимента
-        modules = session.query(
-            ExperimentData.module_id,
-            ExperimentData.module_name,
-            func.count(func.distinct(ExperimentData.version_id)).label('versions_count'),
-            func.count(func.distinct(ExperimentData.module_iteration_num)).label('iterations_count'),
-            func.count(ExperimentData.id).label('total_records')
-        ).filter(
-            ExperimentData.experiment_name == experiment_name
-        ).group_by(ExperimentData.module_id, ExperimentData.module_name).all()
-
-        if not modules:
-            self.info_label.config(text=f"Эксперимент '{experiment_name}': модули не найдены",
-                                   foreground='red')
-            return
-
-        for module in modules:
-            item_id = self.tree.insert('', tk.END, values=(
-                '☑',  # Чекбокс выбран по умолчанию
-                module.module_id,
-                module.module_name or f"Module_{module.module_id}",
-                module.versions_count,
-                module.iterations_count
-            ), tags=('selected',))
-
-            self.module_states[item_id] = {
-                'module_id': module.module_id,
-                'selected': True
-            }
-
-        print(f"✓ Загружено модулей: {len(modules)} для эксперимента '{experiment_name}'")
-
-    def on_tree_click(self, event):
-        """Обработка клика по дереву для переключения чекбокса"""
-        # Определяем, по какой колонке кликнули
-        region = self.tree.identify("region", event.x, event.y)
-        if region != "cell":
-            return
-
-        column = self.tree.identify_column(event.x)
-        item_id = self.tree.identify_row(event.y)
-
-        if not item_id or item_id not in self.module_states:
-            return
-
-        # Переключаем только при клике на первую колонку (чекбокс)
-        if column == '#1':
-            self._toggle_item(item_id)
-
-    def _toggle_item(self, item_id: str):
-        """Переключение состояния чекбокса"""
-        if item_id not in self.module_states:
-            return
-
-        current_state = self.module_states[item_id]['selected']
-        new_state = not current_state
-        self.module_states[item_id]['selected'] = new_state
-
-        # Получаем текущие значения
-        values = list(self.tree.item(item_id, 'values'))
-        values[0] = '☑' if new_state else '☐'
-        self.tree.item(item_id, values=values)
-
-        # Обновляем тег для цвета
-        self.tree.item(item_id, tags=('selected' if new_state else 'unselected',))
-
-    def on_select_all(self):
-        """Выбрать все модули"""
-        for item_id in self.module_states.keys():
-            self.module_states[item_id]['selected'] = True
-            values = list(self.tree.item(item_id, 'values'))
-            values[0] = '☑'
-            self.tree.item(item_id, values=values, tags=('selected',))
-
-    def on_deselect_all(self):
-        """Снять выделение со всех"""
-        for item_id in self.module_states.keys():
-            self.module_states[item_id]['selected'] = False
-            values = list(self.tree.item(item_id, 'values'))
-            values[0] = '☐'
-            self.tree.item(item_id, values=values, tags=('unselected',))
-
-    def on_refresh(self):
-        """Обновить список модулей"""
-        if self.experiment_name:
-            self.set_experiment(self.experiment_name)
-
-    def get_selected_modules(self) -> List[int]:
-        """Получение ID выбранных модулей"""
-        return [
-            state['module_id']
-            for state in self.module_states.values()
-            if state['selected']
-        ]
-
-
-class SamplingPanel(ttk.Frame):
-    """Панель настройки выборки"""
-
-    def __init__(self, parent):
-        super().__init__(parent)
-        self._create_widgets()
-
-    def _create_widgets(self):
-        ttk.Label(self, text="⚙️ Параметры выборки", font=('Arial', 12, 'bold')).pack(pady=5, anchor=tk.W)
-
-        params_frame = ttk.LabelFrame(self, text="Фильтрация", padding=10)
-        params_frame.pack(fill=tk.X, padx=5, pady=5)
-
-        ttk.Label(params_frame, text="Начальный ID:").grid(row=0, column=0, sticky=tk.W, pady=5)
-        self.start_id_var = tk.IntVar(value=0)
-        ttk.Spinbox(params_frame, from_=0, to=100000, textvariable=self.start_id_var, width=15).grid(row=0, column=1, sticky=tk.W, padx=5, pady=5)
-
-        ttk.Label(params_frame, text="Ограничение (0 - все):").grid(row=1, column=0, sticky=tk.W, pady=5)
-        self.limit_var = tk.IntVar(value=0)
-        ttk.Spinbox(params_frame, from_=0, to=10000, textvariable=self.limit_var, width=15).grid(row=1, column=1, sticky=tk.W, padx=5, pady=5)
-
-        ttk.Label(params_frame, text="Мин. надёжность:").grid(row=2, column=0, sticky=tk.W, pady=5)
-        self.reliability_var = tk.DoubleVar(value=0.0)
-        ttk.Spinbox(params_frame, from_=0.0, to=1.0, increment=0.05, textvariable=self.reliability_var, width=15, format="%.2f").grid(row=2, column=1, sticky=tk.W, padx=5, pady=5)
-
-        #ttk.Label(params_frame, text="Фильтр версий (V1,V2):").grid(row=3, column=0, sticky=tk.W, pady=5)
-        #self.version_filter_var = tk.StringVar(value="")
-        #ttk.Entry(params_frame, textvariable=self.version_filter_var, width=15).grid(row=3, column=1, sticky=tk.W, padx=5, pady=5)
-
-    def get_config(self) -> Dict[str, Any]:
-        #version_filter = self.version_filter_var.get().strip()
-        return {
-            'start_id': self.start_id_var.get(),
-            'limit': self.limit_var.get() if self.limit_var.get() > 0 else None,
-            'min_reliability': self.reliability_var.get() if self.reliability_var.get() > 0 else None#,
-            #'version_names': [v.strip() for v in version_filter.split(',') if v.strip()] if version_filter else None
-        }
-
-
-class VotingPanel(ttk.Frame):
-    """Панель настройки голосования"""
-
-    def __init__(self, parent):
-        super().__init__(parent)
-        self._create_widgets()
-
-    def _create_widgets(self):
-        ttk.Label(self, text="🗳️ Параметры голосования", font=('Arial', 12, 'bold')).pack(pady=5, anchor=tk.W)
-
-        params_frame = ttk.LabelFrame(self, text="Алгоритм", padding=10)
-        params_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
-
-        ttk.Label(params_frame, text="Тип медианы:").pack(anchor=tk.W, pady=5)
-
-        self.median_type_var = tk.StringVar(value="median")
-        radio_frame = ttk.Frame(params_frame)
-        radio_frame.pack(fill=tk.X, pady=5)
-
-        ttk.Radiobutton(radio_frame, text="Обычная", variable=self.median_type_var, value="median").pack(anchor=tk.W)
-        ttk.Radiobutton(radio_frame, text="Нижняя", variable=self.median_type_var, value="median_low").pack(anchor=tk.W)
-        ttk.Radiobutton(radio_frame, text="Верхняя", variable=self.median_type_var, value="median_high").pack(anchor=tk.W)
-        ttk.Radiobutton(radio_frame, text="Взвешенная", variable=self.median_type_var, value="weighted").pack(anchor=tk.W)
-
-        epsilon_frame = ttk.Frame(params_frame)
-        epsilon_frame.pack(fill=tk.X, pady=10)
-
-        ttk.Label(epsilon_frame, text="Порог точности (epsilon):").pack(side=tk.LEFT)
-        self.epsilon_var = tk.DoubleVar(value=0.01)
-        ttk.Spinbox(epsilon_frame, from_=0.0, to=1.0, increment=0.001, textvariable=self.epsilon_var, width=10, format="%.3f").pack(side=tk.LEFT, padx=10)
-
-    def get_config(self) -> Dict[str, Any]:
-        return {
-            'median_type': self.median_type_var.get(),
-            'use_weighted': self.median_type_var.get() == 'weighted',
-            'epsilon': self.epsilon_var.get()
-        }
-
-
-class ResultsPanel(ttk.Frame):
-    """Панель результатов"""
-
-    def __init__(self, parent):
-        super().__init__(parent)
-        self.results = None
-        self._create_widgets()
-
-    def _create_widgets(self):
-        ttk.Label(self, text="📊 Результаты", font=('Arial', 12, 'bold')).pack(pady=5, anchor=tk.W)
-
-        stats_frame = ttk.LabelFrame(self, text="Статистика", padding=10)
-        stats_frame.pack(fill=tk.X, padx=5, pady=5)
-
-        stats_inner = ttk.Frame(stats_frame)
-        stats_inner.pack(fill=tk.X)
-
-        self.total_versions_lbl = ttk.Label(stats_inner, text="Записей: 0")
-        self.total_versions_lbl.grid(row=0, column=0, padx=10, pady=5)
-
-        self.total_modules_lbl = ttk.Label(stats_inner, text="Модулей: 0")
-        self.total_modules_lbl.grid(row=0, column=1, padx=10, pady=5)
-
-        self.correct_lbl = ttk.Label(stats_inner, text="Корректно: 0")
-        self.correct_lbl.grid(row=0, column=2, padx=10, pady=5)
-
-        self.accuracy_lbl = ttk.Label(stats_inner, text="Точность: 0%", font=('Arial', 10, 'bold'))
-        self.accuracy_lbl.grid(row=0, column=3, padx=10, pady=5)
-
-        table_frame = ttk.Frame(self)
-        table_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
-
-        columns = ('Module ID', 'Результат', 'Правильный', 'Статус', 'Отклонение', 'Версий')
-        self.tree = ttk.Treeview(table_frame, columns=columns, show='headings', height=10)
-
-        for col, text, width in zip(columns, columns, [80, 120, 120, 80, 100, 70]):
-            self.tree.heading(col, text=text)
-            self.tree.column(col, width=width, anchor=tk.CENTER if col != 'Результат' else "center")
-
-        y_scrollbar = ttk.Scrollbar(table_frame, orient=tk.VERTICAL, command=self.tree.yview)
-        x_scrollbar = ttk.Scrollbar(table_frame, orient=tk.HORIZONTAL, command=self.tree.xview)
-        self.tree.configure(yscrollcommand=y_scrollbar.set, xscrollcommand=x_scrollbar.set)
-
-        self.tree.grid(row=0, column=0, sticky='nsew')
-        y_scrollbar.grid(row=0, column=1, sticky='ns')
-        x_scrollbar.grid(row=1, column=0, sticky='ew')
-        table_frame.grid_rowconfigure(0, weight=1)
-        table_frame.grid_columnconfigure(0, weight=1)
-
-        btn_frame = ttk.Frame(self)
-        btn_frame.pack(fill=tk.X, pady=5)
-        ttk.Button(btn_frame, text="💾 Сохранить JSON", command=self.on_save).pack(side=tk.RIGHT, padx=5)
-        ttk.Button(btn_frame, text="🗑️ Очистить", command=self.on_clear).pack(side=tk.RIGHT, padx=5)
-
         self.tree.tag_configure('correct', background='#d4edda')
         self.tree.tag_configure('incorrect', background='#f8d7da')
+        self.tree.tag_configure('match', foreground='green')
+        self.tree.tag_configure('mismatch', foreground='red')
 
-    def display_results(self, results: Dict[str, Any]):
-        self.results = results
-        summary = results['summary']
+    def add_run(self, run_data: Dict[str, Any]):
+        """Добавление нового запуска с результатами двух алгоритмов"""
+        run_id = len(self.all_runs) + 1
+        run_data['run_id'] = run_id
+        run_data['timestamp'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        self.all_runs.append(run_data)
 
-        self.total_versions_lbl.config(text=f"Записей: {summary['total_records']}")
-        self.total_modules_lbl.config(text=f"Модулей: {summary['total_modules']}")
-        self.correct_lbl.config(text=f"Корректно: {summary['correct_results']}")
+        self._update_table()
+        self._update_stats()
 
-        accuracy = summary['accuracy'] * 100
-        self.accuracy_lbl.config(text=f"Точность: {accuracy:.2f}%")
-        self.accuracy_lbl.config(foreground='green' if accuracy >= 90 else 'orange' if accuracy >= 70 else 'red')
-
+    def _update_table(self):
+        """Обновление таблицы со всеми запусками"""
         for item in self.tree.get_children():
             self.tree.delete(item)
 
-        for module_id, module_result in results['modules'].items():
-            status = "✓" if module_result['is_correct'] else "✗"
-            deviation = f"{module_result['deviation']:.6f}" if module_result['deviation'] is not None else "N/A"
-            correct = str(module_result['correct_answer']) if module_result['correct_answer'] else "N/A"
+        for run in self.all_runs:
+            experiment_name = run['experiment_name']
+            timestamp = run['timestamp']
+
+            median_result = run['median_result']
+            majority_result = run['majority_result']
+
+            # Проверяем совпадение
+            match = abs(median_result['voted_value'] - majority_result['voted_value']) < 1e-9
+            match_str = "✓ ДА" if match else "✗ НЕТ"
+            match_tag = 'match' if match else 'mismatch'
+
+            # Строка для медианы
+            median_status = "✓" if median_result['is_correct'] else "✗"
+            median_deviation = f"{median_result['deviation']:.6f}" if median_result['deviation'] is not None else "N/A"
+            median_correct = str(median_result['correct_answer']) if median_result['correct_answer'] else "N/A"
 
             self.tree.insert('', tk.END, values=(
-                module_id,
-                f"{module_result['voted_value']:.6f}",
-                correct,
-                status,
-                deviation,
-                module_result['versions_count']
-            ), tags=('correct' if module_result['is_correct'] else 'incorrect',))
+                run['run_id'],
+                experiment_name,
+                "Медиана",
+                f"{median_result['voted_value']:.6f}",
+                median_correct,
+                median_status,
+                median_deviation,
+                match_str,
+                timestamp
+            ), tags=('correct' if median_result['is_correct'] else 'incorrect', match_tag))
 
-    def on_save(self):
-        if not self.results:
+            # Строка для абсолютного большинства
+            majority_status = "✓" if majority_result['is_correct'] else "✗"
+            majority_deviation = f"{majority_result['deviation']:.6f}" if majority_result['deviation'] is not None else "N/A"
+            majority_correct = str(majority_result['correct_answer']) if majority_result['correct_answer'] else "N/A"
+
+            self.tree.insert('', tk.END, values=(
+                run['run_id'],
+                experiment_name,
+                "Абс. большинство",
+                f"{majority_result['voted_value']:.6f}",
+                majority_correct,
+                majority_status,
+                majority_deviation,
+                match_str,
+                timestamp
+            ), tags=('correct' if majority_result['is_correct'] else 'incorrect', match_tag))
+
+    def _update_stats(self):
+        """Обновление статистики"""
+        total_runs = len(self.all_runs)
+
+        matches = 0
+        mismatches = 0
+
+        for run in self.all_runs:
+            median_val = run['median_result']['voted_value']
+            majority_val = run['majority_result']['voted_value']
+
+            if abs(median_val - majority_val) < 1e-9:
+                matches += 1
+            else:
+                mismatches += 1
+
+        self.runs_info_lbl.config(
+            text=f"Всего запусков: {total_runs} | Совпадений: {matches} | Расхождений: {mismatches}"
+        )
+
+    def on_save_to_db(self):
+        """Сохранение всех запусков в базу данных"""
+        if not self.all_runs:
+            messagebox.showwarning("Предупреждение", "Нет результатов для сохранения")
+            return
+
+        session = get_session()
+        saved_count = 0
+
+        try:
+            for run in self.all_runs:
+                if run.get('saved_to_db', False):
+                    continue
+
+                # Сохраняем результат медианы
+                voting_run = VotingRun(
+                    experiment_name=run['experiment_name'],
+                    algorithm_type='median',
+                    median_type='median',
+                    epsilon=run['epsilon'],
+                    module_id=0,
+                    module_name='all',
+                    voted_value=run['median_result']['voted_value'],
+                    correct_answer=run['median_result']['correct_answer'],
+                    is_correct=1 if run['median_result']['is_correct'] else 0,
+                    deviation=run['median_result']['deviation'],
+                    versions_count=run['median_result']['values_count'],
+                    versions_answers=json.dumps(run['median_result']['all_values']),
+                    total_records=run['total_records'],
+                    total_modules=1
+                )
+                session.add(voting_run)
+                saved_count += 1
+
+                # Сохраняем результат абсолютного большинства
+                voting_run = VotingRun(
+                    experiment_name=run['experiment_name'],
+                    algorithm_type='absolute_majority',
+                    median_type=None,
+                    epsilon=run['epsilon'],
+                    module_id=0,
+                    module_name='all',
+                    voted_value=run['majority_result']['voted_value'],
+                    correct_answer=run['majority_result']['correct_answer'],
+                    is_correct=1 if run['majority_result']['is_correct'] else 0,
+                    deviation=run['majority_result']['deviation'],
+                    versions_count=run['majority_result']['values_count'],
+                    versions_answers=json.dumps(run['majority_result']['all_values']),
+                    total_records=run['total_records'],
+                    total_modules=1
+                )
+                session.add(voting_run)
+                saved_count += 1
+
+                run['saved_to_db'] = True
+
+            session.commit()
+            messagebox.showinfo("Успех", f"Сохранено {saved_count} записей в базу данных")
+
+        except Exception as e:
+            session.rollback()
+            messagebox.showerror("Ошибка", f"Ошибка сохранения в БД:\n{str(e)}")
+        finally:
+            session.close()
+
+    def on_save_json(self):
+        """Сохранение в JSON"""
+        if not self.all_runs:
             messagebox.showwarning("Предупреждение", "Нет результатов")
             return
 
@@ -533,20 +402,29 @@ class ResultsPanel(ttk.Frame):
 
         if filepath:
             try:
+                data = {
+                    'total_runs': len(self.all_runs),
+                    'runs': self.all_runs
+                }
                 with open(filepath, 'w', encoding='utf-8') as f:
-                    json.dump(self.results, f, ensure_ascii=False, indent=2, default=str)
+                    json.dump(data, f, ensure_ascii=False, indent=2, default=str)
                 messagebox.showinfo("Успех", f"Сохранено:\n{filepath}")
             except Exception as e:
                 messagebox.showerror("Ошибка", f"Ошибка:\n{str(e)}")
 
-    def on_clear(self):
+    def on_clear_all(self):
+        """Очистка всех результатов"""
+        if not self.all_runs:
+            return
+
+        if not messagebox.askyesno("Подтверждение", "Очистить все результаты?"):
+            return
+
+        self.all_runs.clear()
         for item in self.tree.get_children():
             self.tree.delete(item)
-        self.total_versions_lbl.config(text="Записей: 0")
-        self.total_modules_lbl.config(text="Модулей: 0")
-        self.correct_lbl.config(text="Корректно: 0")
-        self.accuracy_lbl.config(text="Точность: 0%", foreground='black')
-        self.results = None
+
+        self.runs_info_lbl.config(text="Всего запусков: 0 | Совпадений: 0 | Расхождений: 0")
 
 
 class MainFrame(tk.Tk):
@@ -555,8 +433,10 @@ class MainFrame(tk.Tk):
     def __init__(self, db_file_path: str):
         super().__init__()
         self.db_file_path = db_file_path
-        self.title("Система медианного голосования")
-        self.geometry("1200x800")
+        self.title("Система голосования: медиана vs абсолютное большинство")
+        self.geometry("1200x700")
+
+        self.algorithm = VotingAlgorithm()
 
         self._create_widgets()
         self._create_menu()
@@ -567,52 +447,140 @@ class MainFrame(tk.Tk):
         self.notebook = ttk.Notebook(self)
         self.notebook.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
 
-        # ВАЖНО: передаём callback в ExperimentPanel
         self.experiment_panel = ExperimentPanel(
             self.notebook,
-            on_experiment_selected=self._on_experiment_selected
+            on_run_clicked=self._on_run_clicked
         )
-        self.module_panel = ModulePanel(self.notebook)
-        self.sampling_panel = SamplingPanel(self.notebook)
-        self.voting_panel = VotingPanel(self.notebook)
         self.results_panel = ResultsPanel(self.notebook)
 
         self.notebook.add(self.experiment_panel, text="1. Эксперимент")
-        self.notebook.add(self.module_panel, text="2. Модули")
-        self.notebook.add(self.sampling_panel, text="3. Выборка")
-        self.notebook.add(self.voting_panel, text="4. Голосование")
-        self.notebook.add(self.results_panel, text="5. Результаты")
-
-        # Переключение вкладок по событию
-        self.notebook.bind('<<NotebookTabChanged>>', self._on_tab_changed)
-
-        btn_frame = ttk.Frame(self)
-        btn_frame.pack(pady=10)
-
-        self.run_btn = ttk.Button(btn_frame, text="🚀 Запустить голосование", command=self.on_run_voting)
-        self.run_btn.config(width=30)
-        self.run_btn.pack()
+        self.notebook.add(self.results_panel, text="2. Результаты (сравнение)")
 
         self.status_bar = ttk.Label(self, text=f"Готов | {os.path.basename(self.db_file_path)}",
                                     relief=tk.SUNKEN, anchor=tk.W)
         self.status_bar.pack(side=tk.BOTTOM, fill=tk.X)
 
-    def _on_experiment_selected(self, experiment_name: str):
-        """Callback при выборе эксперимента - загружаем модули и переключаемся"""
-        print(f"Выбран эксперимент: {experiment_name}")
-        self.module_panel.set_experiment(experiment_name)
-        # Автоматически переключаемся на вкладку модулей
-        self.notebook.select(1)
-        self.status_bar.config(text=f"Выбран: {experiment_name} | {os.path.basename(self.db_file_path)}")
+    def _on_run_clicked(self, experiment_name: str):
+        """Запуск двух алгоритмов для выбранного эксперимента"""
+        self.status_bar.config(text=f"Выполнение для '{experiment_name}'...")
+        self.update()
 
-    def _on_tab_changed(self, event):
-        """Обработка переключения вкладок"""
-        current_tab = self.notebook.index(self.notebook.select())
-        # Если переключаемся на вкладку модулей и есть выбранный эксперимент
-        if current_tab == 1:
-            exp_name = self.experiment_panel.get_selected_experiment_name()
-            if exp_name and self.module_panel.experiment_name != exp_name:
-                self.module_panel.set_experiment(exp_name)
+        try:
+            result = self.run_both_voting(experiment_name)
+            if result:
+                self.results_panel.add_run(result)
+                self.status_bar.config(text=f"Готово | {experiment_name}")
+                self.notebook.select(1)
+
+                # Показываем статистику
+                median_val = result['median_result']['voted_value']
+                majority_val = result['majority_result']['voted_value']
+                match = "✓ ДА" if abs(median_val - majority_val) < 1e-9 else "✗ НЕТ"
+
+                messagebox.showinfo(
+                    "Результаты сравнения",
+                    f"Эксперимент: {experiment_name}\n"
+                    f"Всего значений: {result['total_records']}\n\n"
+                    f"Медиана: {median_val:.6f}\n"
+                    f"Абс. большинство: {majority_val:.6f}\n\n"
+                    f"Совпадают: {match}"
+                )
+
+        except Exception as e:
+            messagebox.showerror("Ошибка", f"Ошибка:\n{str(e)}")
+            import traceback
+            traceback.print_exc()
+            self.status_bar.config(text="Ошибка")
+
+    def run_both_voting(self, experiment_name: str) -> Optional[Dict[str, Any]]:
+        """
+        Запуск ОБОИХ алгоритмов по ВСЕМ значениям эксперимента сразу
+
+        Правильный ответ для каждого алгоритма вычисляется СВОИМ методом:
+        - Для медианы: медиана всех correct_answer
+        - Для абсолютного большинства: самое частое correct_answer (мода)
+        """
+        session = get_session()
+
+        # Получаем ВСЕ записи эксперимента
+        query = session.query(ExperimentData).filter(
+            ExperimentData.experiment_name == experiment_name
+        ).order_by(ExperimentData.version_answer)
+
+        data_list = query.all()
+
+        if not data_list:
+            messagebox.showinfo("Информация", f"Нет данных для эксперимента '{experiment_name}'")
+            return None
+
+        # Извлекаем ВСЕ version_answer
+        all_values = [d.version_answer for d in data_list]
+
+        # Извлекаем ВСЕ correct_answer (только ненулевые)
+        all_correct_answers = [d.correct_answer for d in data_list if d.correct_answer is not None]
+
+        print(f"\n{'=' * 80}")
+        print(f"ОТЛАДКА: Эксперимент '{experiment_name}'")
+        print(f"{'=' * 80}")
+        print(f"Всего записей: {len(all_values)}")
+        print(f"Уникальных version_answer: {len(set(all_values))}")
+        print(f"Всего correct_answer: {len(all_correct_answers)}")
+        print(f"Уникальных correct_answer: {len(set(all_correct_answers))}")
+        print()
+
+        # Анализ частот version_answer
+        from collections import Counter
+        values_counter = Counter(all_values)
+        correct_counter = Counter(all_correct_answers)
+
+        print("ТОП-5 самых частых version_answer:")
+        for i, (value, count) in enumerate(values_counter.most_common(5), 1):
+            print(f"  {i}. {value:<20} встречается {count} раз")
+
+        print()
+        print("ТОП-5 самых частых correct_answer:")
+        for i, (value, count) in enumerate(correct_counter.most_common(5), 1):
+            print(f"  {i}. {value:<20} встречается {count} раз")
+
+        print(f"{'=' * 80}\n")
+
+        # Запускаем МЕДИАНОЕ голосование
+        # Правильный ответ = медиана всех correct_answer
+        median_result = self.algorithm.vote_median(all_values, all_correct_answers)
+        print(f"РЕЗУЛЬТАТ МЕДИАНЫ:")
+        print(f"  - Голосование: {median_result.voted_value}")
+        print(f"  - Правильный ответ (медиана correct_answer): {median_result.correct_answer}")
+        print(f"  - Правильно: {median_result.is_correct}")
+        print(f"  - Отклонение: {median_result.deviation}")
+        print()
+
+        # Запускаем АБСОЛЮТНОЕ БОЛЬШИНСТВО
+        # Правильный ответ = самое частое correct_answer (мода)
+        majority_result = self.algorithm.vote_absolute_majority(all_values, all_correct_answers)
+        print(f"РЕЗУЛЬТАТ АБСОЛЮТНОГО БОЛЬШИНСТВА:")
+        print(f"  - Голосование: {majority_result.voted_value}")
+        print(f"  - Правильный ответ (мода correct_answer): {majority_result.correct_answer}")
+        print(f"  - Абсолютное большинство (>50%): {majority_result.additional_info.get('has_absolute_majority')}")
+        print(f"  - Правильно: {majority_result.is_correct}")
+        print(f"  - Отклонение: {majority_result.deviation}")
+        print(f"{'=' * 80}\n")
+
+        return {
+            'experiment_name': experiment_name,
+            'db_file': self.db_file_path,
+            'epsilon': self.algorithm.epsilon,
+            'total_records': len(all_values),
+            'saved_to_db': False,
+            'median_result': median_result.to_dict(),
+            'majority_result': majority_result.to_dict()
+        }
+
+    def _load_data(self):
+        try:
+            self.experiment_panel.load_experiments()
+            self.status_bar.config(text="Готов | " + os.path.basename(self.db_file_path))
+        except Exception as e:
+            messagebox.showerror("Ошибка", f"Ошибка загрузки:\n{str(e)}")
 
     def _create_menu(self):
         menubar = tk.Menu(self)
@@ -633,145 +601,6 @@ class MainFrame(tk.Tk):
 
         self.config(menu=menubar)
 
-    def _load_data(self):
-        try:
-            self.experiment_panel.load_experiments()
-            self.status_bar.config(text="Готов | " + os.path.basename(self.db_file_path))
-        except Exception as e:
-            messagebox.showerror("Ошибка", f"Ошибка загрузки:\n{str(e)}")
-
-    def on_run_voting(self):
-        exp_name = self.experiment_panel.get_selected_experiment_name()
-        if not exp_name:
-            messagebox.showwarning("Предупреждение", "Выберите эксперимент на вкладке 1")
-            self.notebook.select(0)
-            return
-
-        module_ids = self.module_panel.get_selected_modules()
-        if not module_ids:
-            messagebox.showwarning("Предупреждение", "Выберите хотя бы один модуль на вкладке 2")
-            self.notebook.select(1)
-            return
-
-        sampling_config = self.sampling_panel.get_config()
-        voting_config = self.voting_panel.get_config()
-
-        msg = (f"Запустить?\n\nЭксперимент: {exp_name}\n"
-               f"Модулей: {len(module_ids)}\nТип: {voting_config['median_type']}\n"
-               f"Epsilon: {voting_config['epsilon']}")
-
-        if not messagebox.askyesno("Подтверждение", msg):
-            return
-
-        self.status_bar.config(text="Выполнение...")
-        self.run_btn.config(state='disabled')
-        self.update()
-
-        try:
-            results = self.run_voting(exp_name, module_ids, sampling_config, voting_config)
-            if results:
-                self.results_panel.display_results(results)
-                self.status_bar.config(text="Готово")
-                self.notebook.select(4)
-        except Exception as e:
-            messagebox.showerror("Ошибка", f"Ошибка:\n{str(e)}")
-            import traceback
-            traceback.print_exc()
-            self.status_bar.config(text="Ошибка")
-        finally:
-            self.run_btn.config(state='normal')
-
-    def run_voting(self, experiment_name: str, module_ids: List[int],
-                   sampling_config: Dict[str, Any], voting_config: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-        session = get_session()
-
-        query = session.query(ExperimentData).filter(
-            ExperimentData.experiment_name == experiment_name,
-            ExperimentData.module_id.in_(module_ids)
-        )
-
-        if sampling_config['start_id'] > 0:
-            query = query.filter(ExperimentData.id >= sampling_config['start_id'])
-        if sampling_config['min_reliability']:
-            query = query.filter(ExperimentData.version_reliability >= sampling_config['min_reliability'])
-        #if sampling_config['version_names']:
-            #query = query.filter(ExperimentData.version_name.in_(sampling_config['version_names']))
-        if sampling_config['limit']:
-            query = query.limit(sampling_config['limit'])
-
-        query = query.order_by(ExperimentData.module_id, ExperimentData.version_name)
-        data_list = query.all()
-
-        if not data_list:
-            messagebox.showinfo("Информация", "Нет данных с такими фильтрами")
-            return None
-
-        # Группировка: module_id -> version_key -> [data, ...]
-        grouped = {}
-        for data in data_list:
-            if data.module_id not in grouped:
-                grouped[data.module_id] = {}
-            v_key = data.version_name or f"V{data.version_id}"
-            if v_key not in grouped[data.module_id]:
-                grouped[data.module_id][v_key] = []
-            grouped[data.module_id][v_key].append(data)
-
-        algorithm = MedianVotingAlgorithm(epsilon=voting_config['epsilon'])
-
-        results = {
-            'experiment_name': experiment_name,
-            'db_file': self.db_file_path,
-            'timestamp': datetime.now().isoformat(),
-            'filters': {'sampling': sampling_config, 'voting': voting_config},
-            'modules': {},
-            'summary': {
-                'total_records': len(data_list),
-                'total_modules': len(grouped),
-                'correct_results': 0,
-                'incorrect_results': 0,
-                'accuracy': 0.0
-            }
-        }
-
-        for module_id, versions_dict in grouped.items():
-            # Берём по одной записи каждой версии для голосования
-            # Группируем по module_iteration_num - для каждой итерации своё голосование
-            iterations = {}
-            for version_key, data_items in versions_dict.items():
-                for data in data_items:
-                    iter_num = data.module_iteration_num
-                    if iter_num not in iterations:
-                        iterations[iter_num] = []
-                    # Добавляем только если ещё не добавили эту версию для этой итерации
-                    if not any(d.version_id == data.version_id for d in iterations[iter_num]):
-                        iterations[iter_num].append(data)
-
-            # Если есть несколько итераций - голосуем для каждой, берём среднее/первую
-            # Для простоты - голосуем по первой итерации с достаточным кол-вом версий
-            for iter_num, versions_data in sorted(iterations.items()):
-                if len(versions_data) >= 2:
-                    if voting_config['use_weighted']:
-                        result = algorithm.vote_weighted(versions_data)
-                    else:
-                        result = algorithm.vote(versions_data, voting_config['median_type'])
-
-                    results['modules'][module_id] = result.to_dict()
-                    results['modules'][module_id]['module_name'] = versions_data[0].module_name
-                    results['modules'][module_id]['iteration'] = iter_num
-
-                    if result.is_correct is not None:
-                        if result.is_correct:
-                            results['summary']['correct_results'] += 1
-                        else:
-                            results['summary']['incorrect_results'] += 1
-                    break  # Обрабатываем только первую подходящую итерацию
-
-        total = results['summary']['correct_results'] + results['summary']['incorrect_results']
-        if total > 0:
-            results['summary']['accuracy'] = results['summary']['correct_results'] / total
-
-        return results
-
     def on_refresh(self):
         self.experiment_panel.load_experiments()
         messagebox.showinfo("Информация", "Обновлено")
@@ -784,15 +613,28 @@ class MainFrame(tk.Tk):
         if filepath:
             try:
                 with open(filepath, 'r', encoding='utf-8') as f:
-                    results = json.load(f)
-                self.results_panel.display_results(results)
-                self.notebook.select(4)
-                messagebox.showinfo("Успех", "Загружено")
+                    data = json.load(f)
+
+                runs = data.get('runs', [data])
+                for run in runs:
+                    self.results_panel.add_run(run)
+
+                self.notebook.select(1)
+                messagebox.showinfo("Успех", f"Загружено {len(runs)} запусков")
             except Exception as e:
                 messagebox.showerror("Ошибка", f"Ошибка:\n{str(e)}")
 
     def on_about(self):
-        messagebox.showinfo("О программе", "Система медианного голосования\nВерсия 1.1\n\n(C) 2026")
+        info = (
+            "Система сравнения алгоритмов голосования\n"
+            "Версия 4.0\n\n"
+            "Алгоритмы:\n"
+            "1. Медиана (statistics.median)\n"
+            "2. Абсолютное большинство\n\n"
+            "Вычисления по ВСЕМ значениям эксперимента\n\n"
+            "(C) 2026"
+        )
+        messagebox.showinfo("О программе", info)
 
     def on_close(self):
         from database.connection import close_database
@@ -806,7 +648,6 @@ def start_gui(db_file_path: str):
     try:
         init_database(db_file_path)
     except Exception as e:
-        # Создаём временное tk приложение для отображения ошибки
         temp_root = tk.Tk()
         temp_root.withdraw()
         messagebox.showerror("Ошибка", f"Ошибка инициализации БД:\n{str(e)}")

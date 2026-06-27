@@ -1,133 +1,200 @@
-"""Алгоритм медианного голосования"""
+"""Алгоритмы голосования с использованием библиотеки statistics"""
 
 from typing import List, Dict, Any, Optional
-from statistics import median, median_low, median_high
+from statistics import median, mean, stdev
+from collections import Counter
 
 
-class MedianVotingResult:
+class VotingResult:
     """Результат голосования"""
 
     def __init__(self,
                  voted_value: float,
-                 versions_count: int,
-                 versions_answers: List[float],
-                 median_type: str = 'median',
+                 values_count: int,
+                 all_values: List[float],
+                 voting_type: str = 'median',
                  is_correct: Optional[bool] = None,
                  correct_answer: Optional[float] = None,
-                 deviation: Optional[float] = None):
+                 deviation: Optional[float] = None,
+                 additional_info: Optional[Dict[str, Any]] = None):
         self.voted_value = voted_value
-        self.versions_count = versions_count
-        self.versions_answers = sorted(versions_answers)
-        self.median_type = median_type
+        self.values_count = values_count
+        self.all_values = sorted(all_values)
+        self.voting_type = voting_type
         self.is_correct = is_correct
         self.correct_answer = correct_answer
         self.deviation = deviation
+        self.additional_info = additional_info or {}
 
     def to_dict(self) -> Dict[str, Any]:
         return {
             'voted_value': self.voted_value,
-            'versions_count': self.versions_count,
-            'versions_answers': self.versions_answers,
-            'median_type': self.median_type,
+            'values_count': self.values_count,
+            'all_values': self.all_values,
+            'voting_type': self.voting_type,
             'is_correct': self.is_correct,
             'correct_answer': self.correct_answer,
-            'deviation': self.deviation
+            'deviation': self.deviation,
+            **self.additional_info
         }
 
 
-class MedianVotingAlgorithm:
-    """Алгоритм медианного голосования"""
+class VotingAlgorithm:
+    """Алгоритмы голосования"""
 
     def __init__(self, epsilon: float = 0.01):
         self.epsilon = epsilon
 
-    def vote(self, versions: List[Any], median_type: str = 'median') -> MedianVotingResult:
+    def _check_correctness(self, voted_value: float, correct_answer: Optional[float]):
+        if correct_answer is None:
+            return None, None
+
+        deviation = abs(voted_value - correct_answer)
+
+        if correct_answer != 0:
+            is_correct = deviation <= self.epsilon * abs(correct_answer)
+        else:
+            is_correct = deviation <= self.epsilon
+
+        return is_correct, deviation
+
+    def _get_reference_value(self, values: List[float], method: str = 'median') -> Optional[float]:
         """
-        Обычное медианное голосование
+        Получение опорного (правильного) значения из списка
 
         Args:
-            versions: Список объектов ExperimentData
-            median_type: Тип медианы
+            values: Список значений (correct_answer)
+            method: 'median' - медиана, 'majority' - самое частое значение
         """
-        if not versions:
-            raise ValueError("Список версий пуст")
+        if not values:
+            return None
 
-        if len(versions) < 2:
-            raise ValueError("Нужно минимум 2 версии")
-
-        answers = [v.version_answer for v in versions]
-
-        if median_type == 'median':
-            voted_value = median(answers)
-        elif median_type == 'median_low':
-            voted_value = median_low(answers)
-        elif median_type == 'median_high':
-            voted_value = median_high(answers)
+        if method == 'median':
+            return median(values)
+        elif method == 'majority':
+            counter = Counter(values)
+            return counter.most_common(1)[0][0]
         else:
-            raise ValueError(f"Неизвестный тип: {median_type}")
+            raise ValueError(f"Неизвестный метод: {method}")
 
-        correct_answer = versions[0].correct_answer if versions else None
-        deviation = abs(voted_value - correct_answer) if correct_answer is not None else None
-        is_correct = None
+    def vote_median(self, values: List[float],
+                    correct_answers: Optional[List[float]] = None) -> VotingResult:
+        """
+        Вычисление медианы по ВСЕМ значениям сразу
 
-        if deviation is not None and correct_answer is not None:
-            if correct_answer != 0:
-                is_correct = deviation <= self.epsilon * abs(correct_answer)
-            else:
-                is_correct = deviation <= self.epsilon
+        Правильный ответ вычисляется как МЕДИАНА всех correct_answer
 
-        return MedianVotingResult(
+        Args:
+            values: Список всех значений (version_answer)
+            correct_answers: Список всех правильных ответов (correct_answer)
+        """
+        if not values:
+            raise ValueError("Список значений пуст")
+
+        if len(values) < 2:
+            raise ValueError("Нужно минимум 2 значения")
+
+        # Вычисляем медиану
+        voted_value = median(values)
+
+        # Правильный ответ = медиана всех correct_answer
+        correct_answer = self._get_reference_value(correct_answers, 'median') if correct_answers else None
+
+        is_correct, deviation = self._check_correctness(voted_value, correct_answer)
+
+        # Статистика
+        counter = Counter(values)
+        most_common = counter.most_common(1)[0]
+
+        additional_info = {
+            'mean_value': mean(values),
+            'stdev_value': stdev(values) if len(values) > 1 else 0.0,
+            'min_value': min(values),
+            'max_value': max(values),
+            'mode_value': most_common[0],
+            'mode_count': most_common[1]
+        }
+
+        return VotingResult(
             voted_value=voted_value,
-            versions_count=len(versions),
-            versions_answers=answers,
-            median_type=median_type,
+            values_count=len(values),
+            all_values=values,
+            voting_type='median',
             is_correct=is_correct,
             correct_answer=correct_answer,
-            deviation=deviation
+            deviation=deviation,
+            additional_info=additional_info
         )
 
-    def vote_weighted(self, versions: List[Any]) -> MedianVotingResult:
+    def vote_absolute_majority(self, values: List[float],
+                                correct_answers: Optional[List[float]] = None) -> VotingResult:
         """
-        Взвешенное медианное голосование
+        Голосование абсолютным большинством
+
+        Правильный ответ = самое частое значение среди correct_answer (мода)
+
+        Алгоритм:
+        1. Подсчитываем частоту каждого УНИКАЛЬНОГО значения
+        2. Находим значение с максимальной частотой
+        3. Возвращаем самое частое значение (моду)
 
         Args:
-            versions: Список объектов ExperimentData с version_reliability
+            values: Список всех значений
+            correct_answers: Список всех правильных ответов
         """
-        if not versions:
-            raise ValueError("Список версий пуст")
+        if not values:
+            raise ValueError("Список значений пуст")
 
-        versions_with_weights = [
-            (v.version_answer, v.version_reliability or 1.0)
-            for v in versions
-        ]
-        versions_with_weights.sort(key=lambda x: x[0])
+        if len(values) < 2:
+            raise ValueError("Нужно минимум 2 значения")
 
-        total_weight = sum(w for _, w in versions_with_weights)
-        cumulative_weight = 0
-        median_value = versions_with_weights[-1][0]
+        # Подсчитываем частоту каждого значения
+        counter = Counter(values)
 
-        for value, weight in versions_with_weights:
-            cumulative_weight += weight
-            if cumulative_weight >= total_weight / 2:
-                median_value = value
-                break
+        # Находим самое частое значение
+        most_common_value, most_common_count = counter.most_common(1)[0]
 
-        correct_answer = versions[0].correct_answer if versions else None
-        deviation = abs(median_value - correct_answer) if correct_answer is not None else None
-        is_correct = None
+        # Проверяем, есть ли абсолютное большинство (>50%)
+        majority_threshold = len(values) / 2.0
+        has_absolute_majority = most_common_count > majority_threshold
 
-        if deviation is not None and correct_answer is not None:
-            if correct_answer != 0:
-                is_correct = deviation <= self.epsilon * abs(correct_answer)
-            else:
-                is_correct = deviation <= self.epsilon
+        # Возвращаем самое частое значение
+        voted_value = most_common_value
 
-        return MedianVotingResult(
-            voted_value=median_value,
-            versions_count=len(versions),
-            versions_answers=[v.version_answer for v in versions],
-            median_type='weighted_median',
+        # Правильный ответ = самое частое значение среди correct_answer
+        correct_answer = self._get_reference_value(correct_answers, 'majority') if correct_answers else None
+
+        is_correct, deviation = self._check_correctness(voted_value, correct_answer)
+
+        # Топ-5 самых частых значений
+        top_5 = counter.most_common(5)
+        frequency_info = {
+            f"value_{i+1}": val for i, (val, count) in enumerate(top_5)
+        }
+        frequency_info.update({
+            f"count_{i+1}": count for i, (val, count) in enumerate(top_5)
+        })
+
+        additional_info = {
+            'has_absolute_majority': has_absolute_majority,
+            'most_common_value': most_common_value,
+            'most_common_count': most_common_count,
+            'majority_threshold': majority_threshold,
+            'total_unique_values': len(counter),
+            'mean_value': mean(values),
+            'stdev_value': stdev(values) if len(values) > 1 else 0.0,
+            'min_value': min(values),
+            'max_value': max(values),
+            **frequency_info
+        }
+
+        return VotingResult(
+            voted_value=voted_value,
+            values_count=len(values),
+            all_values=values,
+            voting_type='absolute_majority',
             is_correct=is_correct,
             correct_answer=correct_answer,
-            deviation=deviation
+            deviation=deviation,
+            additional_info=additional_info
         )

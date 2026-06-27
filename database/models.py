@@ -1,7 +1,8 @@
-"""Модели данных"""
+"""Модели данных базы данных"""
 
-from sqlalchemy import Column, Integer, String, Float, Text, ForeignKey, UniqueConstraint
+from sqlalchemy import Column, Integer, String, Float, Text, ForeignKey, UniqueConstraint, DateTime
 from sqlalchemy.orm import relationship
+from sqlalchemy.sql import func
 from database.connection import Base
 
 
@@ -93,13 +94,14 @@ class ExperimentData(Base):
 
 
 class VoteResult(Base):
-    """Таблица vote_result"""
+    """Таблица vote_result - результаты голосования"""
     __tablename__ = 'vote_result'
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     algorithm_id = Column(Integer, ForeignKey('algorithm.id'), nullable=False)
     experiment_data_id = Column(Integer, ForeignKey('experiment_data.id'), nullable=False)
     vote_answer = Column(Float)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     __table_args__ = (
         UniqueConstraint(
@@ -113,3 +115,28 @@ class VoteResult(Base):
 
     def __repr__(self):
         return f"<VoteResult(id={self.id}, answer={self.vote_answer})>"
+
+
+class VotingRun(Base):
+    """Новая таблица для сохранения запусков голосования"""
+    __tablename__ = 'voting_run'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    experiment_name = Column(String(31), nullable=False)
+    algorithm_type = Column(String(50), nullable=False)  # 'median', 'majority', etc.
+    median_type = Column(String(50))  # 'median', 'median_low', 'median_high', 'weighted'
+    epsilon = Column(Float, nullable=False)
+    module_id = Column(Integer, nullable=False)
+    module_name = Column(String(255))
+    voted_value = Column(Float)
+    correct_answer = Column(Float)
+    is_correct = Column(Integer)  # 0 или 1
+    deviation = Column(Float)
+    versions_count = Column(Integer, nullable=False)
+    versions_answers = Column(Text)  # JSON список ответов
+    total_records = Column(Integer)
+    total_modules = Column(Integer)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    def __repr__(self):
+        return f"<VotingRun(id={self.id}, exp='{self.experiment_name}', algo='{self.algorithm_type}')>"

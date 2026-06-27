@@ -8,7 +8,7 @@ from tkinter import messagebox, filedialog
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="Система медианного голосования")
+    parser = argparse.ArgumentParser(description="Система голосования: медиана и абсолютное большинство")
     parser.add_argument('database', nargs='?', help='Путь к БД')
     parser.add_argument('-d', '--db', dest='database', help='Путь к БД')
     return parser.parse_args()
@@ -37,7 +37,7 @@ def select_db_dialog():
 
 def main():
     print("=" * 60)
-    print("Система медианного голосования")
+    print("Система голосования: медиана и абсолютное большинство")
     print("=" * 60)
 
     args = parse_args()
